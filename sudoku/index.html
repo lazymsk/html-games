@@ -109,6 +109,7 @@
   </select>
   <button id="newGame">新しい問題</button>
   <button id="hlToggle">ハイライト1</button>
+  <button id="timerToggle">時間を隠す</button>
 </div>
 
 <div id="board"></div>
@@ -225,7 +226,7 @@ let values = null;            // 現在の確定値 (0=空)
 let notes = null;             // メモ Set の 9x9
 let selected = null;          // {r, c}
 let mode = "confirm";         // "confirm" | "note"
-let hlMode = 1;               // 1: 同じ数字全マスから縦横 / 2: 選択マスからのみ
+let hlMode = 1;               // 0: なし / 1: 同じ数字全マスから縦横 / 2: 選択マスからのみ
 let startTime = null;
 let timerId = null;
 let finished = false;
@@ -289,7 +290,9 @@ function render() {
   // ハイライト2: 選択マスからのみ縦横＋同じ3x3ブロック
   const crossRows = new Set(), crossCols = new Set();
   let blockR = -1, blockC = -1;
-  if (hlMode === 1) {
+  if (hlMode === 0) {
+    // ハイライトなし
+  } else if (hlMode === 1) {
     if (selVal !== 0) {
       for (let r = 0; r < 9; r++)
         for (let c = 0; c < 9; c++)
@@ -326,7 +329,7 @@ function render() {
           if (crossRows.has(r) || crossCols.has(c)) d.classList.add("hl-cross");
           if (v === selVal) d.classList.add("hl-same");
         }
-      } else {
+      } else if (hlMode === 2) {
         const inBlock = blockR >= 0 && r >= blockR && r < blockR + 3 && c >= blockC && c < blockC + 3;
         if (crossRows.has(r) || crossCols.has(c) || inBlock) d.classList.add("hl-cross");
         if (selVal !== 0 && v === selVal) d.classList.add("hl-same");
@@ -405,9 +408,17 @@ function checkComplete() {
 // ハイライト方式切替
 const hlToggleBtn = document.getElementById("hlToggle");
 hlToggleBtn.addEventListener("click", () => {
-  hlMode = hlMode === 1 ? 2 : 1;
-  hlToggleBtn.textContent = "ハイライト" + hlMode;
+  hlMode = (hlMode + 1) % 3;
+  hlToggleBtn.textContent = "ハイライト" + (hlMode === 0 ? "なし" : hlMode);
   render();
+});
+
+// 時間表示の切替
+const timerToggleBtn = document.getElementById("timerToggle");
+timerToggleBtn.addEventListener("click", () => {
+  const hidden = timerEl.style.display === "none";
+  timerEl.style.display = hidden ? "" : "none";
+  timerToggleBtn.textContent = hidden ? "時間を隠す" : "時間を表示";
 });
 
 // モード切替
