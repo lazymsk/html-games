@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>セルサバイバー</title>
 <style>
   /* ==============================
@@ -21,7 +21,40 @@
     display: block;
     width: 100vw;
     height: 100vh;
+    height: 100dvh; /* iOS Safari のアドレスバー分を除いた高さ */
     background: #182420;
+    touch-action: none; /* スワイプでのスクロール・ズームを無効化 */
+  }
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* ==============================
+     タッチ操作用バーチャルスティック
+     ============================== */
+  #joystick {
+    position: fixed;
+    width: 120px;
+    height: 120px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    transform: translate(-50%, -50%);
+    pointer-events: none; /* 表示専用。入力はキャンバス側で拾う */
+    z-index: 5;
+  }
+  #joystick.hidden { display: none; }
+  #joystick-stick {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.35);
+    transform: translate(-50%, -50%);
   }
 
   /* ==============================
@@ -53,6 +86,7 @@
     border: none;
     border-radius: 8px;
     cursor: pointer;
+    touch-action: manipulation; /* タップ時のダブルタップズーム待ちをなくす */
   }
   .overlay button:hover { background: #3c9; }
 
@@ -65,6 +99,9 @@
   }
   .upgrade-card {
     width: 340px;
+    max-width: 85vw;
+    box-sizing: border-box;
+    touch-action: manipulation;
     padding: 0.8rem 1rem;
     background: #223;
     border: 2px solid #4fd;
@@ -86,6 +123,9 @@
 <body>
 
 <canvas id="game-canvas"></canvas>
+
+<!-- タッチ操作用バーチャルスティック（タッチ中のみ表示） -->
+<div id="joystick" class="hidden"><div id="joystick-stick"></div></div>
 
 <!-- タイトル画面 -->
 <div id="title-screen" class="overlay">
@@ -427,6 +467,57 @@ const keys = {};
 window.addEventListener("keydown", e => { keys[e.key.toLowerCase()] = true; });
 window.addEventListener("keyup",   e => { keys[e.key.toLowerCase()] = false; });
 
+// タッチ入力状態（バーチャルスティック）。x/y は正規化済みの方向
+const touchMove = { x: 0, y: 0 };
+const joystickEl = document.getElementById("joystick");
+const joystickStick = document.getElementById("joystick-stick");
+const JOY_RADIUS = 50;        // スティックの可動半径(px)
+const JOY_DEADZONE = 0.2;     // 可動半径に対するデッドゾーン比率
+let joyPointerId = null;      // スティック操作中のポインタ ID
+let joyOrigin = { x: 0, y: 0 };
+
+canvas.addEventListener("pointerdown", e => {
+  if (e.pointerType === "mouse") return;  // マウスはキーボード操作前提なので無視
+  if (joyPointerId !== null) return;      // 2本目以降の指は無視
+  joyPointerId = e.pointerId;
+  joyOrigin = { x: e.clientX, y: e.clientY };
+  joystickEl.style.left = e.clientX + "px";
+  joystickEl.style.top = e.clientY + "px";
+  joystickStick.style.transform = "translate(-50%, -50%)";
+  joystickEl.classList.remove("hidden");
+  touchMove.x = 0;
+  touchMove.y = 0;
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener("pointermove", e => {
+  if (e.pointerId !== joyPointerId) return;
+  let vx = e.clientX - joyOrigin.x;
+  let vy = e.clientY - joyOrigin.y;
+  const len = Math.hypot(vx, vy);
+  if (len > 0) { vx /= len; vy /= len; }
+  const clamped = Math.min(len, JOY_RADIUS);
+  joystickStick.style.transform =
+    `translate(calc(-50% + ${vx * clamped}px), calc(-50% + ${vy * clamped}px))`;
+  if (clamped < JOY_RADIUS * JOY_DEADZONE) {
+    touchMove.x = 0;
+    touchMove.y = 0;
+  } else {
+    touchMove.x = vx;
+    touchMove.y = vy;
+  }
+});
+
+function endJoystick(e) {
+  if (e.pointerId !== joyPointerId) return;
+  joyPointerId = null;
+  touchMove.x = 0;
+  touchMove.y = 0;
+  joystickEl.classList.add("hidden");
+}
+canvas.addEventListener("pointerup", endJoystick);
+canvas.addEventListener("pointercancel", endJoystick);
+
 // ステージを初期化してプレイ開始できる状態にする
 function initStage(stageIndex) {
   stage = STAGES[stageIndex];
@@ -491,6 +582,11 @@ function updatePlayer(dt) {
   if (keys["s"] || keys["arrowdown"])  dy += 1;
   if (keys["a"] || keys["arrowleft"])  dx -= 1;
   if (keys["d"] || keys["arrowright"]) dx += 1;
+  // キー入力がなければバーチャルスティックの方向を使う
+  if (dx === 0 && dy === 0) {
+    dx = touchMove.x;
+    dy = touchMove.y;
+  }
   if (dx !== 0 || dy !== 0) {
     const len = Math.hypot(dx, dy);
     player.x += (dx / len) * player.moveSpeed * dt;
