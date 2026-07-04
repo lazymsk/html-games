@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ナンプレ</title>
+<style>
+  :root {
+    --cell: min(9.5vmin, 52px);
+    --bg: #f5f6fa;
+    --board-bg: #ffffff;
+    --line: #b9bfcc;
+    --line-bold: #3a4150;
+    --given: #1c2333;
+    --user: #1a5dc8;
+    --note: #7a8194;
+    --sel: #cfe0ff;
+    --hl-cross: #fff3c4;
+    --hl-same: #ffd98a;
+    --error-bg: #ffd7d7;
+    --error-fg: #c62828;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    background: var(--bg);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 12px; min-height: 100vh;
+  }
+  h1 { font-size: 1.2rem; margin: 4px 0 8px; color: #2a3040; }
+
+  .topbar {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; justify-content: center;
+  }
+  #timer {
+    font-size: 1.5rem; font-variant-numeric: tabular-nums;
+    font-weight: 600; color: #2a3040; min-width: 5.5ch; text-align: center;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px;
+  }
+  select, button {
+    font-size: 0.95rem; padding: 7px 14px; border-radius: 8px;
+    border: 1px solid var(--line); background: #fff; cursor: pointer;
+  }
+  button:hover { background: #eef2fb; }
+  button.active { background: #1a5dc8; color: #fff; border-color: #1a5dc8; }
+
+  #board {
+    display: grid;
+    grid-template-columns: repeat(9, var(--cell));
+    grid-template-rows: repeat(9, var(--cell));
+    background: var(--board-bg);
+    border: 3px solid var(--line-bold);
+    user-select: none;
+    touch-action: manipulation;
+  }
+  .cell {
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-size: calc(var(--cell) * 0.55);
+    cursor: pointer; position: relative;
+    color: var(--user);
+  }
+  .cell.bR { border-right: 2px solid var(--line-bold); }
+  .cell.bB { border-bottom: 2px solid var(--line-bold); }
+  .cell.given { color: var(--given); font-weight: 600; }
+  .cell.hl-cross { background: var(--hl-cross); }
+  .cell.hl-same  { background: var(--hl-same); }
+  .cell.selected { background: var(--sel); }
+  .cell.error { background: var(--error-bg); color: var(--error-fg); animation: shake 0.3s; }
+  @keyframes shake {
+    0%,100% { transform: translateX(0); }
+    25% { transform: translateX(-3px); }
+    75% { transform: translateX(3px); }
+  }
+  .notes {
+    display: grid; width: 100%; height: 100%;
+    grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
+    font-size: calc(var(--cell) * 0.24);
+    color: var(--note); line-height: 1;
+  }
+  .notes span { display: flex; align-items: center; justify-content: center; }
+
+  .controls { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .mode-row { display: flex; gap: 8px; }
+  .numpad { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .numpad button {
+    width: calc(var(--cell) * 1.1); height: calc(var(--cell) * 0.9);
+    font-size: 1.2rem; font-weight: 600;
+  }
+  .numpad button.done { opacity: 0.35; }
+
+  #message { min-height: 1.4em; margin-top: 8px; font-weight: 600; }
+  #message.error { color: var(--error-fg); }
+  #message.clear { color: #1a8f3c; font-size: 1.2rem; }
+</style>
+</head>
+<body>
+<h1>ナンプレ</h1>
+
+<div class="topbar">
+  <div id="timer">00:00</div>
+  <select id="difficulty">
+    <option value="1">Lv1 入門</option>
+    <option value="2">Lv2 初級</option>
+    <option value="3" selected>Lv3 中級</option>
+    <option value="4">Lv4 上級</option>
+    <option value="5">Lv5 達人</option>
+  </select>
+  <button id="newGame">新しい問題</button>
+  <button id="hlToggle">ハイライト1</button>
+</div>
+
+<div id="board"></div>
+
+<div class="controls">
+  <div class="mode-row">
+    <button id="modeConfirm" class="active">確定入力</button>
+    <button id="modeNote">仮入力（メモ）</button>
+  </div>
+  <div class="numpad" id="numpad"></div>
+</div>
+<div id="message"></div>
+
+<script>
+"use strict";
+
+// ---------- 盤面生成 ----------
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function canPlace(grid, r, c, v) {
+  for (let i = 0; i < 9; i++) {
+    if (grid[r][i] === v || grid[i][c] === v) return false;
+  }
+  const br = r - (r % 3), bc = c - (c % 3);
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++)
+      if (grid[br + i][bc + j] === v) return false;
+  return true;
+}
+
+// 完成盤をバックトラッキングで生成
+function generateSolution() {
+  const grid = Array.from({ length: 9 }, () => Array(9).fill(0));
+  function fill(pos) {
+    if (pos === 81) return true;
+    const r = Math.floor(pos / 9), c = pos % 9;
+    for (const v of shuffled([1,2,3,4,5,6,7,8,9])) {
+      if (canPlace(grid, r, c, v)) {
+        grid[r][c] = v;
+        if (fill(pos + 1)) return true;
+        grid[r][c] = 0;
+      }
+    }
+    return false;
+  }
+  fill(0);
+  return grid;
+}
+
+// 解の個数を数える（2以上で打ち切り）
+function countSolutions(grid, limit) {
+  let count = 0;
+  function solve() {
+    if (count >= limit) return;
+    // 最も候補の少ないマスを探す
+    let best = -1, bestCands = null;
+    for (let p = 0; p < 81; p++) {
+      const r = Math.floor(p / 9), c = p % 9;
+      if (grid[r][c] !== 0) continue;
+      const cands = [];
+      for (let v = 1; v <= 9; v++) if (canPlace(grid, r, c, v)) cands.push(v);
+      if (best === -1 || cands.length < bestCands.length) { best = p; bestCands = cands; }
+      if (cands.length === 0) return;
+      if (cands.length === 1) break;
+    }
+    if (best === -1) { count++; return; }
+    const r = Math.floor(best / 9), c = best % 9;
+    for (const v of bestCands) {
+      grid[r][c] = v;
+      solve();
+      grid[r][c] = 0;
+      if (count >= limit) return;
+    }
+  }
+  solve();
+  return count;
+}
+
+// 難易度ごとの空きマス数
+const HOLES = { 1: 30, 2: 38, 3: 46, 4: 52, 5: 58 };
+
+function generatePuzzle(level) {
+  const solution = generateSolution();
+  const puzzle = solution.map(row => row.slice());
+  const target = HOLES[level];
+  let removed = 0;
+  const positions = shuffled([...Array(81).keys()]);
+  for (const p of positions) {
+    if (removed >= target) break;
+    const r = Math.floor(p / 9), c = p % 9;
+    const backup = puzzle[r][c];
+    puzzle[r][c] = 0;
+    // 解が一意でなくなったら戻す
+    if (countSolutions(puzzle.map(row => row.slice()), 2) !== 1) {
+      puzzle[r][c] = backup;
+    } else {
+      removed++;
+    }
+  }
+  return { puzzle, solution };
+}
+
+// ---------- ゲーム状態 ----------
+let solution = null;          // 完成盤
+let given = null;             // 初期ヒント (true/false)
+let values = null;            // 現在の確定値 (0=空)
+let notes = null;             // メモ Set の 9x9
+let selected = null;          // {r, c}
+let mode = "confirm";         // "confirm" | "note"
+let hlMode = 1;               // 1: 同じ数字全マスから縦横 / 2: 選択マスからのみ
+let startTime = null;
+let timerId = null;
+let finished = false;
+
+const boardEl = document.getElementById("board");
+const timerEl = document.getElementById("timer");
+const messageEl = document.getElementById("message");
+const cells = [];
+
+// ---------- 盤面DOM構築 ----------
+for (let r = 0; r < 9; r++) {
+  for (let c = 0; c < 9; c++) {
+    const d = document.createElement("div");
+    d.className = "cell";
+    if (c === 2 || c === 5) d.classList.add("bR");
+    if (r === 2 || r === 5) d.classList.add("bB");
+    d.addEventListener("click", () => selectCell(r, c));
+    boardEl.appendChild(d);
+    cells.push(d);
+  }
+}
+
+// 数字パッド
+const numpadEl = document.getElementById("numpad");
+const numBtns = [];
+for (let v = 1; v <= 9; v++) {
+  const b = document.createElement("button");
+  b.textContent = v;
+  b.addEventListener("click", () => inputNumber(v));
+  numpadEl.appendChild(b);
+  numBtns.push(b);
+}
+const eraseBtn = document.createElement("button");
+eraseBtn.textContent = "消";
+eraseBtn.addEventListener("click", () => inputNumber(0));
+numpadEl.appendChild(eraseBtn);
+
+// ---------- タイマー ----------
+function startTimer() {
+  stopTimer();
+  startTime = Date.now();
+  timerEl.textContent = "00:00";
+  timerId = setInterval(() => {
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    const mm = String(Math.floor(s / 60)).padStart(2, "0");
+    const ss = String(s % 60).padStart(2, "0");
+    timerEl.textContent = mm + ":" + ss;
+  }, 500);
+}
+function stopTimer() {
+  if (timerId) { clearInterval(timerId); timerId = null; }
+}
+
+// ---------- 描画 ----------
+function render() {
+  // ハイライト対象の数字（選択マスに値があればその数字）
+  const selVal = selected && values[selected.r][selected.c] !== 0
+    ? values[selected.r][selected.c] : 0;
+
+  // ハイライト1: 同じ数字が入っている全マスから縦横
+  // ハイライト2: 選択マスからのみ縦横＋同じ3x3ブロック
+  const crossRows = new Set(), crossCols = new Set();
+  let blockR = -1, blockC = -1;
+  if (hlMode === 1) {
+    if (selVal !== 0) {
+      for (let r = 0; r < 9; r++)
+        for (let c = 0; c < 9; c++)
+          if (values[r][c] === selVal) { crossRows.add(r); crossCols.add(c); }
+    }
+  } else if (selected) {
+    crossRows.add(selected.r);
+    crossCols.add(selected.c);
+    blockR = selected.r - (selected.r % 3);
+    blockC = selected.c - (selected.c % 3);
+  }
+
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      const d = cells[r * 9 + c];
+      d.classList.remove("hl-cross", "hl-same", "selected", "given", "error");
+      d.textContent = "";
+      const v = values[r][c];
+      if (v !== 0) {
+        d.textContent = v;
+        if (given[r][c]) d.classList.add("given");
+      } else if (notes[r][c].size > 0) {
+        const n = document.createElement("div");
+        n.className = "notes";
+        for (let k = 1; k <= 9; k++) {
+          const s = document.createElement("span");
+          s.textContent = notes[r][c].has(k) ? k : "";
+          n.appendChild(s);
+        }
+        d.appendChild(n);
+      }
+      if (hlMode === 1) {
+        if (selVal !== 0) {
+          if (crossRows.has(r) || crossCols.has(c)) d.classList.add("hl-cross");
+          if (v === selVal) d.classList.add("hl-same");
+        }
+      } else {
+        const inBlock = blockR >= 0 && r >= blockR && r < blockR + 3 && c >= blockC && c < blockC + 3;
+        if (crossRows.has(r) || crossCols.has(c) || inBlock) d.classList.add("hl-cross");
+        if (selVal !== 0 && v === selVal) d.classList.add("hl-same");
+      }
+      if (selected && selected.r === r && selected.c === c) d.classList.add("selected");
+    }
+  }
+
+  // 9個そろった数字をパッドで薄く表示
+  const counts = Array(10).fill(0);
+  for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) counts[values[r][c]]++;
+  for (let v = 1; v <= 9; v++) numBtns[v - 1].classList.toggle("done", counts[v] >= 9);
+}
+
+// ---------- 操作 ----------
+function selectCell(r, c) {
+  if (finished) return;
+  selected = { r, c };
+  render();
+}
+
+function setMessage(text, cls) {
+  messageEl.textContent = text;
+  messageEl.className = cls || "";
+}
+
+function inputNumber(v) {
+  if (finished || !selected) return;
+  const { r, c } = selected;
+  if (given[r][c]) return;
+
+  if (v === 0) {
+    values[r][c] = 0;
+    notes[r][c].clear();
+    setMessage("");
+    render();
+    return;
+  }
+
+  if (mode === "note") {
+    if (values[r][c] !== 0) return;
+    if (notes[r][c].has(v)) notes[r][c].delete(v); else notes[r][c].add(v);
+    setMessage("");
+    render();
+    return;
+  }
+
+  // 確定入力
+  if (solution[r][c] !== v) {
+    setMessage("その数字は間違っています", "error");
+    render();
+    cells[r * 9 + c].textContent = v;
+    cells[r * 9 + c].classList.add("error");
+    return;
+  }
+  values[r][c] = v;
+  notes[r][c].clear();
+  // 同じ行・列・ブロックのメモから v を除去
+  for (let i = 0; i < 9; i++) { notes[r][i].delete(v); notes[i][c].delete(v); }
+  const br = r - (r % 3), bc = c - (c % 3);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) notes[br + i][bc + j].delete(v);
+  setMessage("");
+  render();
+  checkComplete();
+}
+
+function checkComplete() {
+  for (let r = 0; r < 9; r++)
+    for (let c = 0; c < 9; c++)
+      if (values[r][c] !== solution[r][c]) return;
+  finished = true;
+  stopTimer();
+  setMessage("🎉 クリア！ タイム " + timerEl.textContent, "clear");
+}
+
+// ハイライト方式切替
+const hlToggleBtn = document.getElementById("hlToggle");
+hlToggleBtn.addEventListener("click", () => {
+  hlMode = hlMode === 1 ? 2 : 1;
+  hlToggleBtn.textContent = "ハイライト" + hlMode;
+  render();
+});
+
+// モード切替
+const modeConfirmBtn = document.getElementById("modeConfirm");
+const modeNoteBtn = document.getElementById("modeNote");
+modeConfirmBtn.addEventListener("click", () => setMode("confirm"));
+modeNoteBtn.addEventListener("click", () => setMode("note"));
+function setMode(m) {
+  mode = m;
+  modeConfirmBtn.classList.toggle("active", m === "confirm");
+  modeNoteBtn.classList.toggle("active", m === "note");
+}
+
+// キーボード操作
+document.addEventListener("keydown", (e) => {
+  if (finished) return;
+  if (e.key >= "1" && e.key <= "9") { inputNumber(Number(e.key)); return; }
+  if (e.key === "Backspace" || e.key === "Delete" || e.key === "0") { inputNumber(0); return; }
+  if (e.key === " ") { e.preventDefault(); setMode(mode === "confirm" ? "note" : "confirm"); return; }
+  if (!selected) return;
+  let { r, c } = selected;
+  if (e.key === "ArrowUp") r = (r + 8) % 9;
+  else if (e.key === "ArrowDown") r = (r + 1) % 9;
+  else if (e.key === "ArrowLeft") c = (c + 8) % 9;
+  else if (e.key === "ArrowRight") c = (c + 1) % 9;
+  else return;
+  e.preventDefault();
+  selectCell(r, c);
+});
+
+// ---------- 新規ゲーム ----------
+function newGame() {
+  const level = Number(document.getElementById("difficulty").value);
+  setMessage("問題を生成中…");
+  // 生成はミリ秒〜数百ミリ秒程度。描画を先に反映させる
+  setTimeout(() => {
+    const { puzzle, solution: sol } = generatePuzzle(level);
+    solution = sol;
+    values = puzzle.map(row => row.slice());
+    given = puzzle.map(row => row.map(v => v !== 0));
+    notes = Array.from({ length: 9 }, () => Array.from({ length: 9 }, () => new Set()));
+    selected = null;
+    finished = false;
+    setMessage("");
+    setMode("confirm");
+    render();
+    startTimer();
+  }, 20);
+}
+
+document.getElementById("newGame").addEventListener("click", newGame);
+document.getElementById("difficulty").addEventListener("change", newGame);
+
+newGame();
+</script>
+</body>
+</html>

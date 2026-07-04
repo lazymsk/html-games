@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cell Survivor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; }
+  body { font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif; color: #e6edf3; }
+  #game { display: block; width: 100%; height: 100%; }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: 10px 14px; pointer-events: none;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bar {
+    position: relative; height: 16px; border-radius: 8px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    overflow: hidden;
+  }
+  .bar .fill { height: 100%; width: 100%; transition: width 0.12s linear; }
+  #hpFill { background: linear-gradient(90deg, #ff5566, #ff8877); }
+  #xpFill { background: linear-gradient(90deg, #46c2ff, #7ef0d0); width: 0%; }
+  .bar .label {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: bold; text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+  }
+  #hpWrap { max-width: 320px; }
+  #statsRow { display: flex; gap: 18px; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+  #statsRow b { color: #7ef0d0; }
+
+  /* ---------- オーバーレイ（レベルアップ / ゲームオーバー） ---------- */
+  #overlay {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 8, 20, 0.72); backdrop-filter: blur(2px); z-index: 10;
+  }
+  #overlay.hidden { display: none; }
+  #panel {
+    text-align: center; padding: 28px 32px; border-radius: 16px;
+    background: rgba(18, 26, 48, 0.95); border: 1px solid rgba(126, 240, 208, 0.25);
+    box-shadow: 0 12px 48px rgba(0,0,0,0.6); max-width: 720px; width: 92%;
+  }
+  #panel h2 { font-size: 26px; margin-bottom: 6px; letter-spacing: 2px; }
+  #panelSub { font-size: 13px; color: #9fb0c8; margin-bottom: 18px; white-space: pre-line; }
+  #choices { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .choice {
+    flex: 1 1 180px; max-width: 210px; padding: 16px 14px; cursor: pointer;
+    border-radius: 12px; border: 1px solid rgba(126, 240, 208, 0.35);
+    background: rgba(30, 42, 72, 0.9); color: #e6edf3; text-align: left;
+    transition: transform 0.08s ease, background 0.08s ease;
+  }
+  .choice:hover { transform: translateY(-3px); background: rgba(46, 64, 104, 0.95); }
+  .choice .key { font-size: 11px; color: #46c2ff; font-weight: bold; }
+  .choice .name { display: block; font-size: 16px; font-weight: bold; margin: 4px 0; }
+  .choice .desc { font-size: 12px; color: #9fb0c8; }
+  #restartBtn {
+    margin-top: 18px; padding: 12px 42px; font-size: 16px; font-weight: bold; cursor: pointer;
+    border-radius: 10px; border: none; background: linear-gradient(90deg, #46c2ff, #7ef0d0);
+    color: #0b1020;
+  }
+  #restartBtn:hover { filter: brightness(1.1); }
+  #restartBtn.hidden, #choices.hidden { display: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="hpWrap" class="bar"><div id="hpFill" class="fill"></div><div id="hpText" class="label"></div></div>
+  <div class="bar" style="height:10px;"><div id="xpFill" class="fill"></div></div>
+  <div id="statsRow">
+    <span>Lv <b id="levelText">1</b></span>
+    <span>⏱ <b id="timeText">0:00</b></span>
+    <span>撃破 <b id="killText">0</b></span>
+  </div>
+</div>
+
+<div id="overlay" class="hidden">
+  <div id="panel">
+    <h2 id="panelTitle"></h2>
+    <div id="panelSub"></div>
+    <div id="choices"></div>
+    <button id="restartBtn">リスタート</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ==========================================================
+ * CONFIG — 調整用の主要数値はすべてここ
+ * ========================================================== */
+const CONFIG = {
+  game: {
+    winTime: 300,           // クリアまでの生存秒数（5分）
+    maxEnemies: 220,        // 同時出現数の上限（パフォーマンス保護）
+  },
+  player: {
+    radius: 14,
+    speed: 220,             // px/秒
+    maxHp: 100,
+    invincibleTime: 0.8,    // 被弾後の無敵秒数
+  },
+  weapon: {
+    damage: 10,
+    attackInterval: 0.55,   // 発射間隔（秒）
+    minInterval: 0.08,      // 強化しても下回らない発射間隔
+    bulletSpeed: 420,
+    bulletRadius: 5,
+    bulletLife: 2.0,        // 弾の寿命（秒）
+  },
+  xp: {
+    pickupRadius: 80,       // ジェム吸引開始距離
+    attractSpeed: 420,      // 吸引速度
+    baseToLevel: 30,        // Lv1→2 に必要な経験値
+    levelGrowth: 1.22,      // レベルごとの必要量倍率
+  },
+  spawn: {
+    baseInterval: 1.4,      // 開始時のスポーン間隔（秒）
+    minInterval: 0.25,      // 最短スポーン間隔
+    rampPerSec: 0.004,      // 1秒あたりの間隔短縮量
+    burstEverySec: 90,      // この秒数ごとに1回のスポーン数が+1
+    dasherAfter: 25,        // dasher が出現し始める秒数
+    bruiserAfter: 70,       // bruiser が出現し始める秒数
+    hpScalePerMin: 0.45,    // 敵HPの毎分増加率（1分後 = 基礎値の1.45倍）
+  },
+  enemies: {
+    blob:    { radius: 12, hp: 12, speed: 65,  damage: 8,  xp: 5,  color: "#7ecf5a" }, // 雑魚
+    dasher:  { radius: 10, hp: 8,  speed: 125, damage: 6,  xp: 7,  color: "#e8b84a" }, // 速い
+    bruiser: { radius: 19, hp: 42, speed: 45,  damage: 14, xp: 16, color: "#c05a8e" }, // 硬い
+  },
+};
+
+/* 強化候補（3択に出る6種） */
+const UPGRADES = [
+  { id: "dmg",   name: "攻撃力アップ",   desc: "弾のダメージ +25%",        apply: p => { p.damage *= 1.25; } },
+  { id: "rate",  name: "攻撃速度アップ", desc: "発射間隔 -13%",            apply: p => { p.attackInterval = Math.max(CONFIG.weapon.minInterval, p.attackInterval * 0.87); } },
+  { id: "bspd",  name: "弾速アップ",     desc: "弾の速度 +20%",            apply: p => { p.bulletSpeed *= 1.2; } },
+  { id: "hp",    name: "最大HPアップ",   desc: "最大HP +25（同量回復）",   apply: p => { p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); } },
+  { id: "mspd",  name: "移動速度アップ", desc: "移動速度 +12%",            apply: p => { p.moveSpeed *= 1.12; } },
+  { id: "bsize", name: "弾サイズアップ", desc: "弾の半径 +30%",            apply: p => { p.bulletRadius *= 1.3; } },
+];
+
+/* ==========================================================
+ * セットアップ
+ * ========================================================== */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const ui = {
+  hpFill: document.getElementById("hpFill"),
+  hpText: document.getElementById("hpText"),
+  xpFill: document.getElementById("xpFill"),
+  levelText: document.getElementById("levelText"),
+  timeText: document.getElementById("timeText"),
+  killText: document.getElementById("killText"),
+  overlay: document.getElementById("overlay"),
+  panelTitle: document.getElementById("panelTitle"),
+  panelSub: document.getElementById("panelSub"),
+  choices: document.getElementById("choices"),
+  restartBtn: document.getElementById("restartBtn"),
+};
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* ---------- 入力 ---------- */
+const keys = Object.create(null);
+window.addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k.startsWith("arrow") || k === " ") e.preventDefault();
+  keys[k] = true;
+  // レベルアップ中は 1/2/3 で選択
+  if (state.mode === "levelup" && (k === "1" || k === "2" || k === "3")) {
+    const idx = Number(k) - 1;
+    if (state.pendingChoices[idx]) chooseUpgrade(state.pendingChoices[idx]);
+  }
+  if ((state.mode === "gameover" || state.mode === "win") && k === "r") newGame();
+});
+window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+ui.restartBtn.addEventListener("click", newGame);
+
+/* ==========================================================
+ * ゲーム状態
+ * ========================================================== */
+let state;
+
+function newGame() {
+  const c = CONFIG;
+  state = {
+    mode: "playing",   // playing | levelup | gameover | win
+    time: 0,
+    kills: 0,
+    level: 1,
+    xp: 0,
+    xpNeed: c.xp.baseToLevel,
+    spawnTimer: 1.0,
+    pendingChoices: [],
+    player: {
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      radius: c.player.radius,
+      hp: c.player.maxHp,
+      maxHp: c.player.maxHp,
+      moveSpeed: c.player.speed,
+      damage: c.weapon.damage,
+      attackInterval: c.weapon.attackInterval,
+      bulletSpeed: c.weapon.bulletSpeed,
+      bulletRadius: c.weapon.bulletRadius,
+      attackCd: 0.4,
+      invincible: 0,
+    },
+    bullets: [],
+    enemies: [],
+    gems: [],
+  };
+  hideOverlay();
+}
+
+/* ==========================================================
+ * スポーン
+ * ========================================================== */
+function pickEnemyType(t) {
+  const s = CONFIG.spawn;
+  const pool = [["blob", 10]];
+  if (t > s.dasherAfter) pool.push(["dasher", 3 + t / 40]);
+  if (t > s.bruiserAfter) pool.push(["bruiser", 1 + t / 60]);
+  let total = 0;
+  for (const [, w] of pool) total += w;
+  let r = Math.random() * total;
+  for (const [type, w] of pool) {
+    r -= w;
+    if (r <= 0) return type;
+  }
+  return "blob";
+}
+
+function spawnEnemy() {
+  if (state.enemies.length >= CONFIG.game.maxEnemies) return;
+  const type = pickEnemyType(state.time);
+  const def = CONFIG.enemies[type];
+  const margin = def.radius + 12;
+  // 画面外周のランダムな一辺から出現
+  const side = Math.floor(Math.random() * 4);
+  let x, y;
+  if (side === 0)      { x = Math.random() * canvas.width; y = -margin; }
+  else if (side === 1) { x = canvas.width + margin; y = Math.random() * canvas.height; }
+  else if (side === 2) { x = Math.random() * canvas.width; y = canvas.height + margin; }
+  else                 { x = -margin; y = Math.random() * canvas.height; }
+
+  const hpScale = 1 + (state.time / 60) * CONFIG.spawn.hpScalePerMin;
+  state.enemies.push({
+    type, x, y,
+    radius: def.radius,
+    hp: def.hp * hpScale,
+    maxHp: def.hp * hpScale,
+    speed: def.speed,
+    damage: def.damage,
+    xp: def.xp,
+    color: def.color,
+    flash: 0,
+  });
+}
+
+function spawnSystem(dt) {
+  const s = CONFIG.spawn;
+  state.spawnTimer -= dt;
+  if (state.spawnTimer <= 0) {
+    const count = 1 + Math.floor(state.time / s.burstEverySec);
+    for (let i = 0; i < count; i++) spawnEnemy();
+    state.spawnTimer = Math.max(s.minInterval, s.baseInterval - state.time * s.rampPerSec);
+  }
+}
+
+/* ==========================================================
+ * 更新
+ * ========================================================== */
+function nearestEnemy(x, y) {
+  let best = null, bestD = Infinity;
+  for (const e of state.enemies) {
+    const dx = e.x - x, dy = e.y - y;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return best;
+}
+
+function updatePlayer(dt) {
+  const p = state.player;
+  let dx = 0, dy = 0;
+  if (keys["w"] || keys["arrowup"]) dy -= 1;
+  if (keys["s"] || keys["arrowdown"]) dy += 1;
+  if (keys["a"] || keys["arrowleft"]) dx -= 1;
+  if (keys["d"] || keys["arrowright"]) dx += 1;
+  if (dx || dy) {
+    const len = Math.hypot(dx, dy);
+    p.x += (dx / len) * p.moveSpeed * dt;
+    p.y += (dy / len) * p.moveSpeed * dt;
+  }
+  p.x = Math.max(p.radius, Math.min(canvas.width - p.radius, p.x));
+  p.y = Math.max(p.radius, Math.min(canvas.height - p.radius, p.y));
+
+  if (p.invincible > 0) p.invincible -= dt;
+
+  // 自動攻撃：最近接の敵へ発射
+  p.attackCd -= dt;
+  if (p.attackCd <= 0) {
+    const target = nearestEnemy(p.x, p.y);
+    if (target) {
+      const a = Math.atan2(target.y - p.y, target.x - p.x);
+      state.bullets.push({
+        x: p.x, y: p.y,
+        vx: Math.cos(a) * p.bulletSpeed,
+        vy: Math.sin(a) * p.bulletSpeed,
+        radius: p.bulletRadius,
+        damage: p.damage,
+        life: CONFIG.weapon.bulletLife,
+      });
+      p.attackCd = p.attackInterval;
+    }
+  }
+}
+
+function updateBullets(dt) {
+  const arr = state.bullets;
+  let w = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const b = arr[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    const out = b.x < -30 || b.x > canvas.width + 30 || b.y < -30 || b.y > canvas.height + 30;
+    if (b.life > 0 && !b.dead && !out) arr[w++] = b;
+  }
+  arr.length = w;
+}
+
+function updateEnemies(dt) {
+  const p = state.player;
+  for (const e of state.enemies) {
+    const dx = p.x - e.x, dy = p.y - e.y;
+    const d = Math.hypot(dx, dy) || 1;
+    e.x += (dx / d) * e.speed * dt;
+    e.y += (dy / d) * e.speed * dt;
+    if (e.flash > 0) e.flash -= dt;
+  }
+}
+
+function updateGems(dt) {
+  const p = state.player;
+  const arr = state.gems;
+  let w = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const g = arr[i];
+    const dx = p.x - g.x, dy = p.y - g.y;
+    const d = Math.hypot(dx, dy);
+    if (d < CONFIG.xp.pickupRadius) {
+      g.x += (dx / d) * CONFIG.xp.attractSpeed * dt;
+      g.y += (dy / d) * CONFIG.xp.attractSpeed * dt;
+    }
+    if (d < p.radius + 8) {
+      gainXp(g.value);
+    } else {
+      arr[w++] = g;
+    }
+  }
+  arr.length = w;
+}
+
+/* ==========================================================
+ * 衝突
+ * ========================================================== */
+function handleCollisions() {
+  const p = state.player;
+
+  // 弾 × 敵
+  for (const b of state.bullets) {
+    if (b.dead) continue;
+    for (const e of state.enemies) {
+      if (e.hp <= 0) continue;
+      const dx = e.x - b.x, dy = e.y - b.y;
+      const r = e.radius + b.radius;
+      if (dx * dx + dy * dy < r * r) {
+        e.hp -= b.damage;
+        e.flash = 0.1;
+        b.dead = true;
+        break;
+      }
+    }
+  }
+
+  // 死んだ敵の処理（ジェム化）
+  const enemies = state.enemies;
+  let w = 0;
+  for (let i = 0; i < enemies.length; i++) {
+    const e = enemies[i];
+    if (e.hp <= 0) {
+      state.kills++;
+      state.gems.push({ x: e.x, y: e.y, value: e.xp });
+    } else {
+      enemies[w++] = e;
+    }
+  }
+  enemies.length = w;
+
+  // 敵 × プレイヤー
+  if (p.invincible <= 0) {
+    for (const e of state.enemies) {
+      const dx = e.x - p.x, dy = e.y - p.y;
+      const r = e.radius + p.radius;
+      if (dx * dx + dy * dy < r * r) {
+        p.hp -= e.damage;
+        p.invincible = CONFIG.player.invincibleTime;
+        if (p.hp <= 0) {
+          p.hp = 0;
+          gameOver();
+        }
+        break;
+      }
+    }
+  }
+}
+
+/* ==========================================================
+ * レベル / 経験値
+ * ========================================================== */
+function gainXp(v) {
+  state.xp += v;
+  if (state.xp >= state.xpNeed && state.mode === "playing") {
+    openLevelUp();
+  }
+}
+
+function openLevelUp() {
+  state.mode = "levelup";
+  // 6種からランダムに3つ提示
+  const shuffled = UPGRADES.slice().sort(() => Math.random() - 0.5);
+  state.pendingChoices = shuffled.slice(0, 3);
+
+  ui.panelTitle.textContent = "LEVEL UP!";
+  ui.panelSub.textContent = "強化を1つ選択（クリック または 1/2/3キー）";
+  ui.choices.innerHTML = "";
+  ui.choices.classList.remove("hidden");
+  ui.restartBtn.classList.add("hidden");
+  state.pendingChoices.forEach((u, i) => {
+    const btn = document.createElement("button");
+    btn.className = "choice";
+    btn.innerHTML = `<span class="key">[${i + 1}]</span><span class="name">${u.name}</span><span class="desc">${u.desc}</span>`;
+    btn.addEventListener("click", () => chooseUpgrade(u));
+    ui.choices.appendChild(btn);
+  });
+  ui.overlay.classList.remove("hidden");
+}
+
+function chooseUpgrade(u) {
+  u.apply(state.player);
+  state.xp -= state.xpNeed;
+  state.level++;
+  state.xpNeed = Math.round(CONFIG.xp.baseToLevel * Math.pow(CONFIG.xp.levelGrowth, state.level - 1));
+  state.mode = "playing";
+  hideOverlay();
+  // 経験値が余っていれば連続レベルアップ
+  if (state.xp >= state.xpNeed) openLevelUp();
+}
+
+/* ==========================================================
+ * ゲーム終了
+ * ========================================================== */
+function endScreen(title, sub) {
+  ui.panelTitle.textContent = title;
+  ui.panelSub.textContent = sub;
+  ui.choices.classList.add("hidden");
+  ui.restartBtn.classList.remove("hidden");
+  ui.overlay.classList.remove("hidden");
+}
+
+function resultText() {
+  return `生存時間 ${formatTime(state.time)} ／ Lv ${state.level} ／ 撃破 ${state.kills}\n（Rキーでもリスタートできます）`;
+}
+
+function gameOver() {
+  state.mode = "gameover";
+  endScreen("GAME OVER", resultText());
+}
+
+function winGame() {
+  state.mode = "win";
+  endScreen("SURVIVED!", "5分間生き延びた！\n" + resultText());
+}
+
+function hideOverlay() {
+  ui.overlay.classList.add("hidden");
+}
+
+/* ==========================================================
+ * 描画
+ * ========================================================== */
+function renderBackground() {
+  ctx.fillStyle = "#0b1020";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // うっすらグリッド
+  ctx.strokeStyle = "rgba(255,255,255,0.04)";
+  ctx.lineWidth = 1;
+  const grid = 64;
+  ctx.beginPath();
+  for (let x = 0; x < canvas.width; x += grid) { ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); }
+  for (let y = 0; y < canvas.height; y += grid) { ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); }
+  ctx.stroke();
+}
+
+function renderGems() {
+  ctx.fillStyle = "#7ef0d0";
+  for (const g of state.gems) {
+    ctx.beginPath();
+    ctx.moveTo(g.x, g.y - 6);
+    ctx.lineTo(g.x + 5, g.y);
+    ctx.lineTo(g.x, g.y + 6);
+    ctx.lineTo(g.x - 5, g.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function renderEnemies() {
+  for (const e of state.enemies) {
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+    ctx.fillStyle = e.flash > 0 ? "#ffffff" : e.color;
+    ctx.fill();
+    // 細胞っぽい核
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.radius * 0.4, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fill();
+  }
+}
+
+function renderBullets() {
+  ctx.fillStyle = "#ffd766";
+  for (const b of state.bullets) {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function renderPlayer() {
+  const p = state.player;
+  // 無敵中は点滅
+  if (p.invincible > 0 && Math.floor(p.invincible * 12) % 2 === 0) return;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+  ctx.fillStyle = "#46c2ff";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius * 0.45, 0, Math.PI * 2);
+  ctx.fillStyle = "#0b1020";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = "#7ef0d0";
+  ctx.fill();
+}
+
+function render() {
+  renderBackground();
+  renderGems();
+  renderEnemies();
+  renderBullets();
+  renderPlayer();
+}
+
+/* ==========================================================
+ * HUD
+ * ========================================================== */
+function formatTime(t) {
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function updateHud() {
+  const p = state.player;
+  ui.hpFill.style.width = `${(p.hp / p.maxHp) * 100}%`;
+  ui.hpText.textContent = `HP ${Math.ceil(p.hp)} / ${p.maxHp}`;
+  ui.xpFill.style.width = `${Math.min(100, (state.xp / state.xpNeed) * 100)}%`;
+  ui.levelText.textContent = state.level;
+  ui.timeText.textContent = formatTime(state.time);
+  ui.killText.textContent = state.kills;
+}
+
+/* ==========================================================
+ * メインループ
+ * ========================================================== */
+function update(dt) {
+  state.time += dt;
+  if (state.time >= CONFIG.game.winTime) {
+    winGame();
+    return;
+  }
+  spawnSystem(dt);
+  updatePlayer(dt);
+  updateBullets(dt);
+  updateEnemies(dt);
+  handleCollisions();
+  updateGems(dt);
+}
+
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000); // タブ復帰時の暴走防止
+  lastTime = now;
+  if (state.mode === "playing") update(dt);
+  render();
+  updateHud();
+  requestAnimationFrame(loop);
+}
+
+newGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
