@@ -19,6 +19,30 @@
     --hl-same: #ffd98a;
     --error-bg: #ffd7d7;
     --error-fg: #c62828;
+    --fg: #2a3040;
+    --btn-bg: #ffffff;
+    --btn-hover: #eef2fb;
+    --accent: #1a5dc8;
+    --clear: #1a8f3c;
+  }
+  body.dark {
+    --bg: #14161c;
+    --board-bg: #1e2129;
+    --line: #4a5163;
+    --line-bold: #9aa3b5;
+    --given: #e8ebf2;
+    --user: #7ab0ff;
+    --note: #8b93a8;
+    --sel: #2e4a7a;
+    --hl-cross: #3a3620;
+    --hl-same: #6b5a20;
+    --error-bg: #5a2323;
+    --error-fg: #ff8a8a;
+    --fg: #dde1ea;
+    --btn-bg: #2a2e3a;
+    --btn-hover: #363c4c;
+    --accent: #3d7ae0;
+    --clear: #5fd382;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -27,22 +51,24 @@
     display: flex; flex-direction: column; align-items: center;
     padding: 12px; min-height: 100vh;
   }
-  h1 { font-size: 1.2rem; margin: 4px 0 8px; color: #2a3040; }
+  h1 { font-size: 1.2rem; margin: 4px 0 8px; color: var(--fg); }
 
   .topbar {
     display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; justify-content: center;
   }
   #timer {
     font-size: 1.5rem; font-variant-numeric: tabular-nums;
-    font-weight: 600; color: #2a3040; min-width: 5.5ch; text-align: center;
-    background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px;
+    font-weight: 600; color: var(--fg); min-width: 5.5ch; text-align: center;
+    background: var(--btn-bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px;
+    cursor: pointer;
   }
   select, button {
     font-size: 0.95rem; padding: 7px 14px; border-radius: 8px;
-    border: 1px solid var(--line); background: #fff; cursor: pointer;
+    border: 1px solid var(--line); background: var(--btn-bg); color: var(--fg); cursor: pointer;
   }
-  button:hover { background: #eef2fb; }
-  button.active { background: #1a5dc8; color: #fff; border-color: #1a5dc8; }
+  button:hover { background: var(--btn-hover); }
+  button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.icon-btn { font-size: 1.1rem; padding: 6px 12px; line-height: 1; }
 
   #board {
     display: grid;
@@ -52,6 +78,20 @@
     border: 3px solid var(--line-bold);
     user-select: none;
     touch-action: manipulation;
+    position: relative;
+  }
+  #board.paused::after {
+    content: "一時停止中";
+    position: absolute;
+    inset: 0;
+    background: var(--board-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--fg);
+    z-index: 10;
   }
   .cell {
     border-right: 1px solid var(--line);
@@ -92,24 +132,25 @@
 
   #message { min-height: 1.4em; margin-top: 8px; font-weight: 600; }
   #message.error { color: var(--error-fg); }
-  #message.clear { color: #1a8f3c; font-size: 1.2rem; }
+  #message.clear { color: var(--clear); font-size: 1.2rem; }
 </style>
 </head>
 <body>
 <h1>ナンプレ</h1>
 
 <div class="topbar">
-  <div id="timer">00:00</div>
+  <div id="timer" title="タップで時間の表示/非表示">00:00</div>
   <select id="difficulty">
-    <option value="1">Lv1 入門</option>
-    <option value="2">Lv2 初級</option>
-    <option value="3" selected>Lv3 中級</option>
-    <option value="4">Lv4 上級</option>
-    <option value="5">Lv5 達人</option>
+    <option value="1">やさしい</option>
+    <option value="2">ふつう</option>
+    <option value="3" selected>難しい</option>
+    <option value="4">激ムズ</option>
+    <option value="5">鬼ムズ</option>
   </select>
-  <button id="newGame">新しい問題</button>
+  <button id="newGame">Next</button>
   <button id="hlToggle">ハイライト1</button>
-  <button id="timerToggle">時間を隠す</button>
+  <button id="pauseBtn" class="icon-btn" title="一時停止">⏸</button>
+  <button id="darkToggle" class="icon-btn" title="ダークモード切替">🌙</button>
 </div>
 
 <div id="board"></div>
@@ -117,7 +158,7 @@
 <div class="controls">
   <div class="mode-row">
     <button id="modeConfirm" class="active">確定入力</button>
-    <button id="modeNote">仮入力（メモ）</button>
+    <button id="modeNote">メモ</button>
   </div>
   <div class="numpad" id="numpad"></div>
 </div>
@@ -230,6 +271,8 @@ let hlMode = 1;               // 0: なし / 1: 同じ数字全マスから縦�
 let startTime = null;
 let timerId = null;
 let finished = false;
+let paused = false;
+let pausedAt = null;
 
 const boardEl = document.getElementById("board");
 const timerEl = document.getElementById("timer");
@@ -265,19 +308,30 @@ eraseBtn.addEventListener("click", () => inputNumber(0));
 numpadEl.appendChild(eraseBtn);
 
 // ---------- タイマー ----------
+let timerHidden = false;
+
+function formatElapsed() {
+  const now = paused && pausedAt ? pausedAt : Date.now();
+  const s = Math.floor((now - startTime) / 1000);
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return mm + ":" + ss;
+}
+function updateTimerDisplay() {
+  timerEl.textContent = timerHidden ? "🕐" : formatElapsed();
+}
 function startTimer() {
   stopTimer();
   startTime = Date.now();
-  timerEl.textContent = "00:00";
-  timerId = setInterval(() => {
-    const s = Math.floor((Date.now() - startTime) / 1000);
-    const mm = String(Math.floor(s / 60)).padStart(2, "0");
-    const ss = String(s % 60).padStart(2, "0");
-    timerEl.textContent = mm + ":" + ss;
-  }, 500);
+  updateTimerDisplay();
+  timerId = setInterval(updateTimerDisplay, 500);
 }
 function stopTimer() {
   if (timerId) { clearInterval(timerId); timerId = null; }
+}
+function resumeTimer() {
+  stopTimer();
+  timerId = setInterval(updateTimerDisplay, 500);
 }
 
 // ---------- 描画 ----------
@@ -346,7 +400,7 @@ function render() {
 
 // ---------- 操作 ----------
 function selectCell(r, c) {
-  if (finished) return;
+  if (finished || paused) return;
   selected = { r, c };
   render();
 }
@@ -357,7 +411,7 @@ function setMessage(text, cls) {
 }
 
 function inputNumber(v) {
-  if (finished || !selected) return;
+  if (finished || paused || !selected) return;
   const { r, c } = selected;
   if (given[r][c]) return;
 
@@ -402,7 +456,7 @@ function checkComplete() {
       if (values[r][c] !== solution[r][c]) return;
   finished = true;
   stopTimer();
-  setMessage("🎉 クリア！ タイム " + timerEl.textContent, "clear");
+  setMessage("🎉 クリア！ タイム " + formatElapsed(), "clear");
 }
 
 // ハイライト方式切替
@@ -413,12 +467,39 @@ hlToggleBtn.addEventListener("click", () => {
   render();
 });
 
-// 時間表示の切替
-const timerToggleBtn = document.getElementById("timerToggle");
-timerToggleBtn.addEventListener("click", () => {
-  const hidden = timerEl.style.display === "none";
-  timerEl.style.display = hidden ? "" : "none";
-  timerToggleBtn.textContent = hidden ? "時間を隠す" : "時間を表示";
+// 時間表示の切替（時計をタップでアイコン⇔時間）
+timerEl.addEventListener("click", () => {
+  timerHidden = !timerHidden;
+  updateTimerDisplay();
+});
+
+// 一時停止
+const pauseBtn = document.getElementById("pauseBtn");
+pauseBtn.addEventListener("click", () => {
+  if (finished) return;
+  if (!paused) {
+    paused = true;
+    pausedAt = Date.now();
+    stopTimer();
+    boardEl.classList.add("paused");
+    pauseBtn.textContent = "▶";
+    pauseBtn.title = "再開";
+  } else {
+    paused = false;
+    startTime += Date.now() - pausedAt;
+    pausedAt = null;
+    resumeTimer();
+    boardEl.classList.remove("paused");
+    pauseBtn.textContent = "⏸";
+    pauseBtn.title = "一時停止";
+  }
+});
+
+// ダークモード切替
+const darkToggleBtn = document.getElementById("darkToggle");
+darkToggleBtn.addEventListener("click", () => {
+  const dark = document.body.classList.toggle("dark");
+  darkToggleBtn.textContent = dark ? "☀️" : "🌙";
 });
 
 // モード切替
@@ -434,7 +515,7 @@ function setMode(m) {
 
 // キーボード操作
 document.addEventListener("keydown", (e) => {
-  if (finished) return;
+  if (finished || paused) return;
   if (e.key >= "1" && e.key <= "9") { inputNumber(Number(e.key)); return; }
   if (e.key === "Backspace" || e.key === "Delete" || e.key === "0") { inputNumber(0); return; }
   if (e.key === " ") { e.preventDefault(); setMode(mode === "confirm" ? "note" : "confirm"); return; }
@@ -462,6 +543,11 @@ function newGame() {
     notes = Array.from({ length: 9 }, () => Array.from({ length: 9 }, () => new Set()));
     selected = null;
     finished = false;
+    paused = false;
+    pausedAt = null;
+    boardEl.classList.remove("paused");
+    pauseBtn.textContent = "⏸";
+    pauseBtn.title = "一時停止";
     setMessage("");
     setMode("confirm");
     render();
